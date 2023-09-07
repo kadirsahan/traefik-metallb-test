@@ -1,0 +1,147 @@
+helm repo add traefik https://traefik.github.io/charts
+
+helm repo delete traefik
+
+helm repo update
+
+helm show values traefik/traefik > /tmp/values.yaml
+
+helm install traefik traefik/traefik --values /tmp/values.yaml -n traefik --create-namespace
+
+IngressRoute -1
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nginx
+  namespace: default
+spec:
+  entryPoints:
+    - web
+  routes:
+    - match: Host(`traefik.computingforgeeks.com`)
+      kind: Rule
+      services:
+        - name: whoami-svc
+          port: 80
+
+
+nginx blue / green deployment
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    run: nginx
+  name: nginx-deploy-blue
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      run: nginx-blue
+  template:
+    metadata:
+      labels:
+        run: nginx-blue
+    spec:
+      volumes:
+      - name: webdata
+        emptyDir: {}
+      initContainers:
+      - name: web-content
+        image: busybox
+        volumeMounts:
+        - name: webdata
+          mountPath: "/webdata"
+        command: ["/bin/sh", "-c", 'echo "<h1>I am <font color=blue>BLUE</font></h1>" > /webdata/index.html']
+      containers:
+      - image: nginx
+        name: nginx
+        volumeMounts:
+        - name: webdata
+          mountPath: "/usr/share/nginx/html"
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    run: nginx
+  name: nginx-deploy-green
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      run: nginx-green
+  template:
+    metadata:
+      labels:
+        run: nginx-green
+    spec:
+      volumes:
+      - name: webdata
+        emptyDir: {}
+      initContainers:
+      - name: web-content
+        image: busybox
+        volumeMounts:
+        - name: webdata
+          mountPath: "/webdata"
+        command: ["/bin/sh", "-c", 'echo "<h1>I am <font color=green>GREEN</font></h1>" > /webdata/index.html']
+      containers:
+      - image: nginx
+        name: nginx
+        volumeMounts:
+        - name: webdata
+          mountPath: "/usr/share/nginx/html"
+
+➜  temp git:(master) ✗ kubectl apply -f dep_green.yaml
+deployment.apps/nginx-deploy-green created
+➜  temp git:(master) ✗ kubectl get deployment
+NAME                 READY   UP-TO-DATE   AVAILABLE   AGE
+nginx-deploy-blue    0/1     1            0           43s
+nginx-deploy-green   0/1     1            0           4s
+traefik              1/1     1            1           37h
+➜  temp git:(master) ✗ kubectl expose deployment nginx-deploy-blue --port 80
+service/nginx-deploy-blue exposed
+➜  temp git:(master) ✗ kubectl expose deployment nginx-deploy-green --port 80
+service/nginx-deploy-green exposed
+➜  temp git:(master) ✗ kubectl get svc
+NAME                 TYPE        CLUSTER-IP       EXTERNAL-IP   PORT(S)   AGE
+kubernetes           ClusterIP   10.96.0.1        <none>        443/TCP   3d4h
+nginx-deploy-blue    ClusterIP   10.105.143.232   <none>        80/TCP    10s
+nginx-deploy-green   ClusterIP   10.105.93.79     <none>        80/TCP    4s
+
+
+TraefikService
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: TraefikService
+metadata:
+  name: nginx-wrr
+  namespace: default
+spec:
+  weighted:
+    services:
+      - name: nginx-deploy-blue
+        port: 80
+        weight: 1
+      - name: nginx-deploy-green
+        port: 80
+        weight: 1
+
+IngressRoute-2
+---
+apiVersion: traefik.containo.us/v1alpha1
+kind: IngressRoute
+metadata:
+  name: nginx
+  namespace: default
+spec:
+  entryPoints:
+    - web
+  routes:
+  - match: Host(`traefik.computingforgeeks.com`)
+    kind: Rule
+    services:
+    - name: nginx-wrr
+      kind: TraefikService
